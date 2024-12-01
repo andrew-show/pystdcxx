@@ -9,6 +9,8 @@
 #include <string>
 #include <cassert>
 
+namespace {
+
 template <typename T>
 class py_ptr
 {
@@ -85,26 +87,34 @@ private:
     T *p_;
 };
 
-namespace {
-
 struct PyObjectLess
 {
-    PyObjectLess(py_ptr<PyObject> &&less): less(std::move(less))
+    PyObjectLess()
+    {}
+
+    PyObjectLess(const PyObjectLess &rhs): less(rhs.less)
+    {}
+
+    PyObjectLess(PyObjectLess &&rhs): less(std::move(rhs.less))
+    {}
+
+    explicit PyObjectLess(py_ptr<PyObject> &&less): less(std::move(less))
     {
     }
 
     bool operator()(const py_ptr<PyObject> &lhs, const py_ptr<PyObject> &rhs) const
     {
         if (less.get()) {
-            py_ptr<PyObject> result(PyObject_CallFunction(less.get(), "OO", lhs.get(), rhs.get()));
+            py_ptr<PyObject> result(PyObject_CallFunctionObjArgs(less.get(), lhs.get(), rhs.get(), NULL));
             if (!result.get())
                 throw std::runtime_error("Compare two object error");
 
             return PyObject_IsTrue(result.get());
         } else {
             int result = PyObject_RichCompareBool(lhs.get(), rhs.get(), Py_LT);
-            if (result == -1)
+            if (result == -1) {
                 throw std::runtime_error("Compare two object error");
+            }
 
             return result != 0;
         }
@@ -112,8 +122,6 @@ struct PyObjectLess
 
     py_ptr<PyObject> less;
 };
-
-} // namespace
 
 template <typename F>
 void py_tuple_for_each(PyObject *tuple, F callback)
@@ -137,7 +145,7 @@ void py_list_for_each(PyObject *list, F callback)
     }
 }
 
-static inline std::string py_object_repr(PyObject *ob)
+static inline std::string py_repr(PyObject *ob)
 {
     py_ptr<PyObject> unicode(PyObject_Repr(ob));
     if (!unicode.get())
@@ -149,5 +157,7 @@ static inline std::string py_object_repr(PyObject *ob)
 
     return std::string(str);
 }
+
+} // namespace
 
 #endif // PYSTDCXX_UTILS_HPP

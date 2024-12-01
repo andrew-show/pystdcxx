@@ -97,18 +97,34 @@ static PyObject *pystdcxx_set_remove(pystdcxx_set *self, PyObject *value)
     }
 }
 
-static PyObject *pystdcxx_set_iter(pystdcxx_set *self, PyObject *Py_UNUSED(args))
+static PyObject *pystdcxx_set_clear(pystdcxx_set *self, PyObject *Py_UNUSED(args))
+{
+    self->set.clear();
+    Py_RETURN_NONE;
+}
+
+static PyObject *pystdcxx_set_new_iterator(pystdcxx_set *self, stdcxx_set::iterator first, stdcxx_set::iterator last)
 {
     pystdcxx_set_iterator *result = PyObject_NEW(pystdcxx_set_iterator, &pystdcxx_set_iterator_type);
     if (!result)
         return NULL;
 
     new (std::addressof(result->owner)) py_ptr<pystdcxx_set>(self, true);
-    new (std::addressof(result->first)) stdcxx_set::iterator(self->set.begin());
-    new (std::addressof(result->last)) stdcxx_set::iterator(self->set.end());
+    new (std::addressof(result->first)) stdcxx_set::iterator(first);
+    new (std::addressof(result->last)) stdcxx_set::iterator(last);
     result->version = self->version;
 
     return reinterpret_cast<PyObject *>(result);
+}
+
+static PyObject *pystdcxx_set_iter(pystdcxx_set *self, PyObject *Py_UNUSED(args))
+{
+    return pystdcxx_set_new_iterator(self, self->set.begin(), self->set.end());
+}
+
+static PyObject *pystdcxx_set_find(pystdcxx_set *self, PyObject *value)
+{
+    return pystdcxx_set_new_iterator(self, self->set.find(py_ptr<PyObject>(value, true)), self->set.end());
 }
 
 static Py_ssize_t pystdcxx_set_len(pystdcxx_set *self, PyObject *Py_UNUSED(args))
@@ -158,21 +174,29 @@ static PyObject *pystdcxx_set_inplace_concat(pystdcxx_set *self, PyObject *value
 
 static PyObject *pystdcxx_set_repr(pystdcxx_set *self)
 {
-    std::string result("{ ");
+    try {
+        std::string repr("{ ");
+        const char *comma = "";
 
-    for (stdcxx_set::iterator iter = self->set.begin(); iter != self->set.end(); ++iter) {
-        if (result.length() > 2)
-            result += ", ";
-        result += py_object_repr(iter->get());
+        for (stdcxx_set::iterator iter = self->set.begin(); iter != self->set.end(); ++iter) {
+            repr += comma;
+            repr += py_repr(iter->get());
+            comma = ", ";
+        }
+
+        repr += " }";
+        return PyUnicode_DecodeUTF8(repr.c_str(), repr.size(), "ignore");
+    } catch (std::exception &e) {
+        PyErr_SetString(PyExc_RuntimeError, e.what());
+        return NULL;
     }
-
-    result += " }";
-    return PyUnicode_DecodeUTF8(result.c_str(), result.size(), "ignore");
 }
 
 static PyMethodDef pystdcxx_set_methods[] = {
     { "add",          (PyCFunction)pystdcxx_set_add,      METH_O,       "Add item" },
     { "remove",       (PyCFunction)pystdcxx_set_remove,   METH_O,       "Remove item" },
+    { "clear",        (PyCFunction)pystdcxx_set_clear,    METH_NOARGS,  "Clear all items" },
+    { "find",         (PyCFunction)pystdcxx_set_find,     METH_O,       "Find a item and return an iterator" },
     { NULL },
 };
 
@@ -184,7 +208,7 @@ static PySequenceMethods pystdcxx_set_sequence_methods = {
 
 static PyObject *pystdcxx_set_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
-    py_ptr<pystdcxx_set> self((pystdcxx_set *)PyType_GenericNew(type, args, kwds));
+    py_ptr<pystdcxx_set> self(PyObject_GC_New(pystdcxx_set, type));
     if (!self.get())
         return NULL;
 
@@ -196,31 +220,32 @@ static PyObject *pystdcxx_set_new(PyTypeObject *type, PyObject *args, PyObject *
 
 static int pystdcxx_set_init(pystdcxx_set *self, PyObject *args, PyObject *kwds)
 {
-    py_ptr<PyObject> tuple, less;;
+    PyObject *tuple = nullptr, *less = nullptr;
     static const char *kwlist[] = { "tuple", "less", NULL };
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "|O$O", const_cast<char **>(kwlist), &tuple, &less))
         return -1;
 
-    if (less.get()) {
-        if (Py_IsNone(less.get())) {
-            less.reset();
-        } else if (!PyFunction_Check(less.get()) && !PyMethod_Check(less.get())) {
-            PyErr_SetString(PyExc_ValueError, "less argument should be function/method type");
+    if (less) {
+        if (Py_IsNone(less)) {
+        } else if (!PyCallable_Check(less)) {
+            PyErr_SetString(PyExc_ValueError, "less argument should be callable type");
             return -1;
         }
     }
 
-    new (std::addressof(self->set)) stdcxx_set(PyObjectLess(std::move(less)));
+    new (std::addressof(self->set)) stdcxx_set(PyObjectLess(py_ptr<PyObject>(less, true)));
     self->initialized = true;
 
-    if (tuple.get()) {
+    PyObject_GC_Track(self);
+
+    if (tuple) {
         try {
-            if (PyList_Check(tuple.get())) {
-                py_list_for_each(tuple.get(), [self] (PyObject *item) {
+            if (PyList_Check(tuple)) {
+                py_list_for_each(tuple, [self] (PyObject *item) {
                     self->set.insert(py_ptr<PyObject>(item, true));
                 });
-            } else if (PyTuple_Check(tuple.get())) {
-                py_tuple_for_each(tuple.get(), [self] (PyObject *item) {
+            } else if (PyTuple_Check(tuple)) {
+                py_tuple_for_each(tuple, [self] (PyObject *item) {
                     self->set.insert(py_ptr<PyObject>(item, true));
                 });
             } else {
@@ -236,10 +261,45 @@ static int pystdcxx_set_init(pystdcxx_set *self, PyObject *args, PyObject *kwds)
     return 0;
 }
 
+static int pystdcxx_set_gc_traverse(pystdcxx_set *self, visitproc visit, void *arg)
+{
+    printf("pystdcxx_set_gc_traverse %p\n", self);
+
+    if (self->initialized) {
+        PyObject *less = self->set.key_comp().less.get();
+        if (less)
+            Py_VISIT(less);
+
+        for (stdcxx_set::iterator iter = self->set.begin(); iter != self->set.end(); ++iter)
+            Py_VISIT(iter->get());
+    } else {
+        printf("pystdcxx_set_gc_traverse %p not initialized\n", self);
+    }
+
+    return 0;
+}
+
+static int pystdcxx_set_gc_clear(pystdcxx_set *self)
+{
+    printf("pystdcxx_set_gc_clear %p\n", self);
+
+    if (self->initialized) {
+        stdcxx_set set = std::move(self->set);
+        printf("gc clear, less=%p\n", self->set.key_comp().less.get());
+    }
+
+    return 0;
+}
+
 static void pystdcxx_set_dealloc(pystdcxx_set *self)
 {
-    if (self->initialized)
+    printf("pystdcxx_set_dealloc %p\n", self);
+
+    if (self->initialized) {
+        PyObject_GC_UnTrack(self);
         self->set.~stdcxx_set();
+        self->initialized = false;
+    }
 
     Py_TYPE(self)->tp_free(self);
 }
@@ -252,8 +312,10 @@ PyTypeObject pystdcxx_set_type = {
     .tp_dealloc = (destructor)pystdcxx_set_dealloc,
     .tp_repr = (reprfunc)pystdcxx_set_repr,
     .tp_as_sequence = &pystdcxx_set_sequence_methods,
-    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC,
     .tp_doc = PyDoc_STR("Python wrapper for std::set"),
+    .tp_traverse = (traverseproc)pystdcxx_set_gc_traverse,
+    .tp_clear = (inquiry)pystdcxx_set_gc_clear,
     .tp_iter = (getiterfunc)pystdcxx_set_iter,
     .tp_methods = pystdcxx_set_methods,
     .tp_init = (initproc)pystdcxx_set_init,

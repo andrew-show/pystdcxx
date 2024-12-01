@@ -86,7 +86,7 @@ static PyObject *pystdcxx_multiset_remove(pystdcxx_multiset *self, PyObject *val
         size_t result = self->set.erase(py_ptr<PyObject>(value, true));
         if (result)
             ++self->version;
-        return PyLong_FromLong(result);
+        return PyBool_FromLong(result);
     } catch (std::exception &e) {
         PyErr_SetString(PyExc_RuntimeError, e.what());
         return NULL;
@@ -96,18 +96,34 @@ static PyObject *pystdcxx_multiset_remove(pystdcxx_multiset *self, PyObject *val
     }
 }
 
-static PyObject *pystdcxx_multiset_iter(pystdcxx_multiset *self, PyObject *Py_UNUSED(args))
+static PyObject *pystdcxx_multiset_clear(pystdcxx_multiset *self, PyObject *Py_UNUSED(args))
+{
+    self->set.clear();
+    Py_RETURN_NONE;
+}
+
+static PyObject *pystdcxx_multiset_new_iterator(pystdcxx_multiset *self, stdcxx_multiset::iterator first, stdcxx_multiset::iterator last)
 {
     pystdcxx_multiset_iterator *result = PyObject_NEW(pystdcxx_multiset_iterator, &pystdcxx_multiset_iterator_type);
     if (!result)
         return NULL;
 
     new (std::addressof(result->owner)) py_ptr<pystdcxx_multiset>(self, true);
-    new (std::addressof(result->first)) stdcxx_multiset::iterator(self->set.begin());
-    new (std::addressof(result->last)) stdcxx_multiset::iterator(self->set.end());
+    new (std::addressof(result->first)) stdcxx_multiset::iterator(first);
+    new (std::addressof(result->last)) stdcxx_multiset::iterator(last);
     result->version = self->version;
 
     return reinterpret_cast<PyObject *>(result);
+}
+
+static PyObject *pystdcxx_multiset_iter(pystdcxx_multiset *self, PyObject *Py_UNUSED(args))
+{
+    return pystdcxx_multiset_new_iterator(self, self->set.begin(), self->set.end());
+}
+
+static PyObject *pystdcxx_multiset_find(pystdcxx_multiset *self, PyObject *value)
+{
+    return pystdcxx_multiset_new_iterator(self, self->set.find(py_ptr<PyObject>(value, true)), self->set.end());
 }
 
 static Py_ssize_t pystdcxx_multiset_len(pystdcxx_multiset *self, PyObject *Py_UNUSED(args))
@@ -157,21 +173,29 @@ static PyObject *pystdcxx_multiset_inplace_concat(pystdcxx_multiset *self, PyObj
 
 static PyObject *pystdcxx_multiset_repr(pystdcxx_multiset *self)
 {
-    std::string result("{ ");
+    try {
+        std::string repr("{ ");
+        const char *comma = "";
 
-    for (stdcxx_multiset::iterator iter = self->set.begin(); iter != self->set.end(); ++iter) {
-        if (result.length() > 2)
-            result += ", ";
-        result += py_object_repr(iter->get());
+        for (stdcxx_multiset::iterator iter = self->set.begin(); iter != self->set.end(); ++iter) {
+            repr += comma;
+            repr += py_repr(iter->get());
+            comma = ", ";
+        }
+
+        repr += " }";
+        return PyUnicode_DecodeUTF8(repr.c_str(), repr.size(), "ignore");
+    } catch (std::exception &e) {
+        PyErr_SetString(PyExc_RuntimeError, e.what());
+        return NULL;
     }
-
-    result += " }";
-    return PyUnicode_DecodeUTF8(result.c_str(), result.size(), "ignore");
 }
 
 static PyMethodDef pystdcxx_multiset_methods[] = {
     { "add",          (PyCFunction)pystdcxx_multiset_add,      METH_O,       "Add item" },
     { "remove",       (PyCFunction)pystdcxx_multiset_remove,   METH_O,       "Remove item" },
+    { "clear",        (PyCFunction)pystdcxx_multiset_clear,    METH_NOARGS,  "Clear all items" },
+    { "find",         (PyCFunction)pystdcxx_multiset_find,     METH_O,       "Find a item and return an iterator" },
     { NULL },
 };
 
@@ -183,7 +207,7 @@ static PySequenceMethods pystdcxx_multiset_sequence_methods = {
 
 static PyObject *pystdcxx_multiset_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
-    py_ptr<pystdcxx_multiset> self((pystdcxx_multiset *)PyType_GenericNew(type, args, kwds));
+    py_ptr<pystdcxx_multiset> self(PyObject_GC_New(pystdcxx_multiset, type));
     if (!self.get())
         return NULL;
 
@@ -195,31 +219,32 @@ static PyObject *pystdcxx_multiset_new(PyTypeObject *type, PyObject *args, PyObj
 
 static int pystdcxx_multiset_init(pystdcxx_multiset *self, PyObject *args, PyObject *kwds)
 {
-    py_ptr<PyObject> tuple, less;;
+    PyObject *tuple = nullptr, *less = nullptr;
     static const char *kwlist[] = { "tuple", "less", NULL };
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "|O$O", const_cast<char **>(kwlist), &tuple, &less))
         return -1;
 
-    if (less.get()) {
-        if (Py_IsNone(less.get())) {
-            less.reset();
-        } else if (!PyFunction_Check(less.get()) && !PyMethod_Check(less.get())) {
-            PyErr_SetString(PyExc_ValueError, "less argument should be function/method type");
+    if (less) {
+        if (Py_IsNone(less)) {
+        } else if (!PyCallable_Check(less)) {
+            PyErr_SetString(PyExc_ValueError, "less argument should be callable type");
             return -1;
         }
     }
 
-    new (std::addressof(self->set)) stdcxx_multiset(PyObjectLess(std::move(less)));
+    new (std::addressof(self->set)) stdcxx_multiset(PyObjectLess(py_ptr<PyObject>(less, true)));
     self->initialized = true;
 
-    if (tuple.get()) {
+    PyObject_GC_Track(self);
+
+    if (tuple) {
         try {
-            if (PyList_Check(tuple.get())) {
-                py_list_for_each(tuple.get(), [self] (PyObject *item) {
+            if (PyList_Check(tuple)) {
+                py_list_for_each(tuple, [self] (PyObject *item) {
                     self->set.insert(py_ptr<PyObject>(item, true));
                 });
-            } else if (PyTuple_Check(tuple.get())) {
-                py_tuple_for_each(tuple.get(), [self] (PyObject *item) {
+            } else if (PyTuple_Check(tuple)) {
+                py_tuple_for_each(tuple, [self] (PyObject *item) {
                     self->set.insert(py_ptr<PyObject>(item, true));
                 });
             } else {
@@ -235,10 +260,45 @@ static int pystdcxx_multiset_init(pystdcxx_multiset *self, PyObject *args, PyObj
     return 0;
 }
 
+static int pystdcxx_multiset_gc_traverse(pystdcxx_multiset *self, visitproc visit, void *arg)
+{
+    printf("pystdcxx_multiset_gc_traverse %p\n", self);
+
+    if (self->initialized) {
+        PyObject *less = self->set.key_comp().less.get();
+        if (less)
+            Py_VISIT(less);
+
+        for (stdcxx_multiset::iterator iter = self->set.begin(); iter != self->set.end(); ++iter)
+            Py_VISIT(iter->get());
+    } else {
+        printf("pystdcxx_multiset_gc_traverse %p not initialized\n", self);
+    }
+
+    return 0;
+}
+
+static int pystdcxx_multiset_gc_clear(pystdcxx_multiset *self)
+{
+    printf("pystdcxx_multiset_gc_clear %p\n", self);
+
+    if (self->initialized) {
+        stdcxx_multiset set = std::move(self->set);
+        printf("gc clear, less=%p\n", self->set.key_comp().less.get());
+    }
+
+    return 0;
+}
+
 static void pystdcxx_multiset_dealloc(pystdcxx_multiset *self)
 {
-    if (self->initialized)
+    printf("pystdcxx_multiset_dealloc %p\n", self);
+
+    if (self->initialized) {
+        PyObject_GC_UnTrack(self);
         self->set.~stdcxx_multiset();
+        self->initialized = false;
+    }
 
     Py_TYPE(self)->tp_free(self);
 }
@@ -251,8 +311,10 @@ PyTypeObject pystdcxx_multiset_type = {
     .tp_dealloc = (destructor)pystdcxx_multiset_dealloc,
     .tp_repr = (reprfunc)pystdcxx_multiset_repr,
     .tp_as_sequence = &pystdcxx_multiset_sequence_methods,
-    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC,
     .tp_doc = PyDoc_STR("Python wrapper for std::multiset"),
+    .tp_traverse = (traverseproc)pystdcxx_multiset_gc_traverse,
+    .tp_clear = (inquiry)pystdcxx_multiset_gc_clear,
     .tp_iter = (getiterfunc)pystdcxx_multiset_iter,
     .tp_methods = pystdcxx_multiset_methods,
     .tp_init = (initproc)pystdcxx_multiset_init,
