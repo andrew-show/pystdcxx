@@ -87,40 +87,30 @@ private:
     T *p_;
 };
 
-struct PyObjectLess
+template<typename T>
+struct py_less
 {
-    PyObjectLess()
+    explicit py_less(T &self): self(self)
     {}
-
-    PyObjectLess(const PyObjectLess &rhs): less(rhs.less)
-    {}
-
-    PyObjectLess(PyObjectLess &&rhs): less(std::move(rhs.less))
-    {}
-
-    explicit PyObjectLess(py_ptr<PyObject> &&less): less(std::move(less))
-    {
-    }
 
     bool operator()(const py_ptr<PyObject> &lhs, const py_ptr<PyObject> &rhs) const
     {
-        if (less.get()) {
-            py_ptr<PyObject> result(PyObject_CallFunctionObjArgs(less.get(), lhs.get(), rhs.get(), NULL));
+        if (self.less.get()) {
+            py_ptr<PyObject> result(PyObject_CallFunctionObjArgs(self.less.get(), lhs.get(), rhs.get(), NULL));
             if (!result.get())
                 throw std::runtime_error("Compare two object error");
 
             return PyObject_IsTrue(result.get());
         } else {
             int result = PyObject_RichCompareBool(lhs.get(), rhs.get(), Py_LT);
-            if (result == -1) {
+            if (result == -1)
                 throw std::runtime_error("Compare two object error");
-            }
 
             return result != 0;
         }
     }
 
-    py_ptr<PyObject> less;
+    T &self;
 };
 
 template <typename F>
