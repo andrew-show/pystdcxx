@@ -93,7 +93,7 @@ struct py_less
     {
         PyObject *f = less.get();
         if (f) {
-            py_ptr<PyObject> result(PyObject_CallFunctionObjArgs(f, lhs.get(), rhs.get(), NULL));
+            py_ptr<PyObject> result(PyObject_CallFunctionObjArgs(f, lhs.get(), rhs.get(), nullptr));
             if (!result.get())
                 throw std::runtime_error("Compare two object error");
 
@@ -110,23 +110,37 @@ struct py_less
     py_ptr<PyObject> &less;
 };
 
-template <typename F>
-void py_tuple_for_each(PyObject *tuple, F callback)
+static inline bool py_tuple_check(PyObject *tuple)
 {
-    int n = PyTuple_GET_SIZE(tuple);
-    for (int i = 0; i < n; ++i) {
-        PyObject *item = PyTuple_GET_ITEM(tuple, i);
-        if (item)
-            callback(item);
-    }
+    return PyList_Check(tuple) || PyTuple_Check(tuple);
+}
+
+static inline int py_tuple_get_size(PyObject *tuple)
+{
+    if (PyTuple_Check(tuple))
+        return PyTuple_GET_SIZE(tuple);
+    else if (PyList_Check(tuple))
+        return PyList_GET_SIZE(tuple);
+    else
+        return -1;
+}
+
+static inline PyObject *py_tuple_get_item(PyObject *tuple, int index)
+{
+    if (PyTuple_Check(tuple))
+        return PyTuple_GET_ITEM(tuple, index);
+    else if (PyList_Check(tuple))
+        return PyList_GET_ITEM(tuple, index);
+    else
+        return nullptr;
 }
 
 template <typename F>
-void py_list_for_each(PyObject *list, F callback)
+void py_tuple_for_each(PyObject *tuple, F callback)
 {
-    int n = PyList_GET_SIZE(list);
+    int n = py_tuple_get_size(tuple);
     for (int i = 0; i < n; ++i) {
-        PyObject *item = PyList_GET_ITEM(list, i);
+        PyObject *item = py_tuple_get_item(tuple, i);
         if (item)
             callback(item);
     }
@@ -152,7 +166,7 @@ public:
     static PyTypeObject *get()
     {
         static PyTypeObject type = {
-            .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
+            .ob_base = PyVarObject_HEAD_INIT(nullptr, 0)
             .tp_name = tp_name(),
             .tp_basicsize = sizeof(T),
             .tp_itemsize = 0,
@@ -161,6 +175,7 @@ public:
             .tp_setattr = (setattrfunc)tp_setattr(),
             .tp_repr = (reprfunc)tp_repr(),
             .tp_as_sequence = tp_as_sequence(),
+            .tp_as_mapping = tp_as_mapping(),
             .tp_hash = (hashfunc)tp_hash(),
             .tp_call = (ternaryfunc)tp_call(),
             .tp_str = (reprfunc)tp_str(),
@@ -185,6 +200,7 @@ public:
     static void free(void *p) { free_<T>(p, nullptr); }
     static PyMethodDef *tp_methods() { return tp_methods_<T>(nullptr); }
     static PySequenceMethods *tp_as_sequence() { return tp_as_sequence_<T>(nullptr); }
+    static PyMappingMethods *tp_as_mapping() { return tp_as_mapping_<T>(nullptr); }
     static constexpr const char *tp_name() { return tp_name_<T>(nullptr); }
     static constexpr const char *tp_doc() { return tp_doc_<T>(nullptr); }
     static constexpr void (*tp_dealloc())(T *self) { return tp_dealloc_<T>(nullptr); }
@@ -212,6 +228,9 @@ public:
     static constexpr int (*sq_contains())(T *self, PyObject *value) { return sq_contains_<T>(nullptr); }
     static constexpr PyObject* (*sq_inplace_concat())(T *self, PyObject *args) { return sq_inplace_concat_<T>(nullptr); }
     static constexpr PyObject* (*sq_inplace_repeat())(T *self, PyObject *args) { return sq_inplace_repeat_<T>(nullptr); }
+    static constexpr Py_ssize_t (*mp_length())(T *self) { return mp_length_<T>(nullptr); }
+    static constexpr PyObject* (*mp_subscript())(T *self, PyObject *key) { return mp_subscript_<T>(nullptr); }
+    static constexpr int (*mp_ass_subscript())(T *self, PyObject *key, PyObject *value) { return mp_ass_subscript_<T>(nullptr); }
 
 private:
     template<typename O>
@@ -236,7 +255,7 @@ private:
     static PySequenceMethods *tp_as_sequence_(...) { return nullptr; }
 
     template<typename O>
-    static PySequenceMethods *tp_as_sequence_(decltype(&O::sq_length))
+    static PySequenceMethods *tp_as_sequence_(decltype(&O::sq_item))
     {
         static PySequenceMethods methods = {
             .sq_length = (lenfunc)sq_length(),
@@ -247,6 +266,21 @@ private:
             .sq_contains = (objobjproc)sq_contains(),
             .sq_inplace_concat = (binaryfunc)sq_inplace_concat(),
             .sq_inplace_repeat = (ssizeargfunc)sq_inplace_repeat(),
+        };
+
+        return &methods;
+    }
+
+    template<typename O>
+    static PyMappingMethods *tp_as_mapping_(...) { return nullptr; }
+
+    template<typename O>
+    static PyMappingMethods *tp_as_mapping_(decltype(&O::mp_subscript))
+    {
+        static PyMappingMethods methods = {
+            .mp_length = (lenfunc)mp_length(),
+            .mp_subscript = (binaryfunc)mp_subscript(),
+            .mp_ass_subscript = (objobjargproc)mp_ass_subscript(),
         };
 
         return &methods;
@@ -413,6 +447,25 @@ private:
 
     template<typename O>
     static constexpr PyObject* (*sq_inplace_repeat_(decltype(&O::sq_inplace_repeat)))(O *self, PyObject *args) { return &O::sq_inplace_repeat; }
+
+    template<typename O>
+    static constexpr Py_ssize_t (*mp_length_(...))(O *self) { return nullptr; }
+
+    template<typename O>
+    static constexpr Py_ssize_t (*mp_length_(decltype(&O::mp_length)))(O *self) { return &O::mp_length; }
+
+    template<typename O>
+    static constexpr PyObject* (*mp_subscript_(...))(O *self, PyObject *key) { return nullptr; }
+
+    template<typename O>
+    static constexpr PyObject* (*mp_subscript_(decltype(&O::mp_subscript)))(O *self, PyObject *key) { return &O::mp_subscript; }
+
+    template<typename O>
+    static constexpr int (*mp_ass_subscript_(...))(O *self, PyObject *key, PyObject *value) { return nullptr; }
+
+    template<typename O>
+    static constexpr int (*mp_ass_subscript_(decltype(&O::mp_ass_subscript)))(O *self, PyObject *key, PyObject *value) { return &O::mp_ass_subscript; }
+
 };
 
 template<typename T>

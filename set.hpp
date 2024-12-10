@@ -33,13 +33,13 @@ public:
     static PyObject *tp_iter(pystdcxx_set *self);
     static Py_ssize_t sq_length(pystdcxx_set *self);
     static int sq_contains(pystdcxx_set *self, PyObject *value);
-    static PyObject *sq_inplace_concat(pystdcxx_set *self, PyObject *value);
+    static PyObject *sq_inplace_concat(pystdcxx_set *self, PyObject *tuple);
     static PyObject *add(pystdcxx_set *self, PyObject *value);
     static PyObject *remove(pystdcxx_set *self, PyObject *value);
     static PyObject *clear(pystdcxx_set *self, PyObject *args);
     static PyObject *reverse(pystdcxx_set *self, PyObject *args);
     static PyObject *find(pystdcxx_set *self, PyObject *value);
-    static PyObject *popitem(pystdcxx_set *self, PyObject *args);
+    static PyObject *popitem(pystdcxx_set *self, PyObject *args, PyObject *kwds);
 
 private:
     typedef std::set<py_ptr<PyObject>, py_less> stdcxx_set;

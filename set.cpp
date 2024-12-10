@@ -8,8 +8,8 @@ PyMethodDef *pystdcxx_set::tp_methods()
         { "clear",        (PyCFunction)pystdcxx_set::clear,    METH_NOARGS,  "Clear all items" },
         { "reverse",      (PyCFunction)pystdcxx_set::reverse,  METH_NOARGS,  "Find an item and return an iterator" },
         { "find",         (PyCFunction)pystdcxx_set::find,     METH_O,       "Find an item and return an iterator" },
-        { "popitem",      (PyCFunction)pystdcxx_set::popitem,  METH_O,       "Pop and remove the first/last item" },
-        { NULL },
+        { "popitem",      (PyCFunction)pystdcxx_set::popitem,  METH_VARARGS | METH_KEYWORDS,       "Pop and remove the first/last item" },
+        { nullptr },
     };
 
     return methods;
@@ -18,7 +18,7 @@ PyMethodDef *pystdcxx_set::tp_methods()
 int pystdcxx_set::tp_init(pystdcxx_set *self, PyObject *args, PyObject *kwds)
 {
     PyObject *tuple = nullptr, *less = nullptr;
-    static const char *kwlist[] = { "tuple", "less", NULL };
+    static const char *kwlist[] = { "tuple", "less", nullptr };
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "|O$O", const_cast<char **>(kwlist), &tuple, &less))
         return -1;
 
@@ -33,11 +33,7 @@ int pystdcxx_set::tp_init(pystdcxx_set *self, PyObject *args, PyObject *kwds)
 
     if (tuple) {
         try {
-            if (PyList_Check(tuple)) {
-                py_list_for_each(tuple, [self] (PyObject *item) {
-                    self->set.insert(py_ptr<PyObject>(item, true));
-                });
-            } else if (PyTuple_Check(tuple)) {
+            if (py_tuple_check(tuple)) {
                 py_tuple_for_each(tuple, [self] (PyObject *item) {
                     self->set.insert(py_ptr<PyObject>(item, true));
                 });
@@ -62,7 +58,7 @@ PyObject *pystdcxx_set::tp_new(PyTypeObject *type, PyObject *args, PyObject *kwd
     } catch ( ... ) {
         if (!PyErr_Occurred())
             PyErr_SetString(PyExc_RuntimeError, "Create set object failure");
-        return NULL;
+        return nullptr;
     }
 }
 
@@ -87,7 +83,7 @@ int pystdcxx_set::tp_clear(pystdcxx_set *self)
 PyObject *pystdcxx_set::tp_repr(pystdcxx_set *self)
 {
     try {
-        std::string repr("{ ");
+        std::string repr("{");
         const char *comma = "";
 
         for (stdcxx_set::iterator iter = self->set.begin(); iter != self->set.end(); ++iter) {
@@ -96,12 +92,12 @@ PyObject *pystdcxx_set::tp_repr(pystdcxx_set *self)
             comma = ", ";
         }
 
-        repr += " }";
+        repr += "}";
         return PyUnicode_DecodeUTF8(repr.c_str(), repr.size(), "ignore");
     } catch (std::exception &e) {
         if (!PyErr_Occurred())
             PyErr_SetString(PyExc_RuntimeError, e.what());
-        return NULL;
+        return nullptr;
     }
 }
 
@@ -120,31 +116,25 @@ int pystdcxx_set::sq_contains(pystdcxx_set *self, PyObject *value)
     return self->set.find(py_ptr<PyObject>(value, true)) != self->set.end();
 }
 
-PyObject *pystdcxx_set::sq_inplace_concat(pystdcxx_set *self, PyObject *value)
+PyObject *pystdcxx_set::sq_inplace_concat(pystdcxx_set *self, PyObject *tuple)
 {
     size_t size = self->set.size();
     
     try {
-        if (PyList_Check(value)) {
-            py_list_for_each(value, [self] (PyObject *item) {
+        if (py_tuple_check(tuple)) {
+            py_tuple_for_each(tuple, [self] (PyObject *item) {
                 self->set.insert(py_ptr<PyObject>(item, true));
             });
-        } else if (PyTuple_Check(value)) {
-            py_tuple_for_each(value, [self] (PyObject *item) {
-                self->set.insert(py_ptr<PyObject>(item, true));
-            });
-        } else if (!PyObject_IsInstance(value, reinterpret_cast<PyObject *>(py_type<pystdcxx_set>::get()))) {
-            self->set.insert(py_ptr<PyObject>(value, true));
         } else {
             PyErr_SetString(PyExc_ValueError, "Require list/tuple type");
-            return NULL;
+            return nullptr;
         }
     } catch (std::exception &e) {
         if (size != self->set.size())
             ++self->version;
         if (!PyErr_Occurred())
             PyErr_SetString(PyExc_RuntimeError, e.what());
-        return NULL;
+        return nullptr;
     }
 
     if (size != self->set.size())
@@ -164,11 +154,11 @@ PyObject *pystdcxx_set::add(pystdcxx_set *self, PyObject *value)
     } catch (std::exception &e) {
         if (!PyErr_Occurred())
             PyErr_SetString(PyExc_RuntimeError, e.what());
-        return NULL;
+        return nullptr;
     } catch ( ... ) {
         if (!PyErr_Occurred())
             PyErr_SetString(PyExc_RuntimeError, "Unknown error");
-        return NULL;
+        return nullptr;
     }
 }
 
@@ -182,11 +172,11 @@ PyObject *pystdcxx_set::remove(pystdcxx_set *self, PyObject *value)
     } catch (std::exception &e) {
         if (!PyErr_Occurred())
             PyErr_SetString(PyExc_RuntimeError, e.what());
-        return NULL;
+        return nullptr;
     } catch ( ... ) {
         if (!PyErr_Occurred())
             PyErr_SetString(PyExc_RuntimeError, "Unknown error");
-        return NULL;
+        return nullptr;
     }
 }
 
@@ -210,8 +200,34 @@ PyObject *pystdcxx_set::find(pystdcxx_set *self, PyObject *value)
     } catch ( ... ) {
         if (!PyErr_Occurred())
             PyErr_SetString(PyExc_RuntimeError, "Unknown error");
+        return nullptr;
+    }
+}
+
+PyObject *pystdcxx_set::popitem(pystdcxx_set *self, PyObject *args, PyObject *kwds)
+{
+    PyObject *is_last = nullptr;
+    static const char *kwlist[] = { "last", nullptr };
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|O", const_cast<char **>(kwlist), &is_last))
+        return NULL;
+
+    if (self->set.empty()) {
+        PyErr_SetString(PyExc_ValueError, "Empty set");
         return NULL;
     }
+
+    stdcxx_set::iterator iter;
+    if (is_last && PyObject_IsTrue(is_last)) {
+        iter = self->set.end();
+        --iter;
+    } else {
+        iter = self->set.begin();
+    }
+
+    py_ptr<PyObject> item(std::move(*iter));
+    self->set.erase(iter);
+
+    return item.release();
 }
 
 PyObject *pystdcxx_set::iterator::tp_iter(pystdcxx_set::iterator *self)
@@ -224,11 +240,11 @@ PyObject *pystdcxx_set::iterator::tp_iternext(pystdcxx_set::iterator *self)
 {
     if (self->version != self->owner->version) {
         PyErr_SetString(PyExc_RuntimeError, "Can't change set while iterating");
-        return NULL;
+        return nullptr;
     }
 
     if (self->first == self->last)
-        return NULL;
+        return nullptr;
 
     PyObject *item = self->first->get();
     ++self->first;
@@ -247,11 +263,11 @@ PyObject *pystdcxx_set::reverse_iterator::tp_iternext(pystdcxx_set::reverse_iter
 {
     if (self->version != self->owner->version) {
         PyErr_SetString(PyExc_RuntimeError, "Can't change set while iterating");
-        return NULL;
+        return nullptr;
     }
 
     if (self->first == self->last)
-        return NULL;
+        return nullptr;
 
     PyObject *item = self->first->get();
     ++self->first;
